@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+		<title>Galaxy Knight - Blackhole Crusade</title>
+		<style>
+html, body, #canvas {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+body {
+	color: white;
+	background-color: black;
+	overflow: hidden;
+	touch-action: none;
+}
+
+#canvas {
+	display: block;
+}
+
+#canvas:focus {
+	outline: none;
+}
+
+#status, #status-splash, #status-progress {
+	position: absolute;
+	left: 0;
+	right: 0;
+}
+
+#status, #status-splash {
+	top: 0;
+	bottom: 0;
+}
+
+#status {
+	background-color: #242424;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	visibility: hidden;
+}
+
+#status-splash {
+	max-height: 100%;
+	max-width: 100%;
+	margin: auto;
+}
+
+#status-splash.show-image--false {
+	display: none;
+}
+
+#status-splash.fullsize--true {
+	height: 100%;
+	width: 100%;
+	object-fit: contain;
+}
+
+#status-splash.use-filter--false {
+	image-rendering: pixelated;
+}
+
+#status-progress, #status-notice {
+	display: none;
+}
+
+#status-progress {
+	bottom: 10%;
+	width: 50%;
+	margin: 0 auto;
+}
+
+#status-notice {
+	background-color: #5b3943;
+	border-radius: 0.5rem;
+	border: 1px solid #9b3943;
+	color: #e0e0e0;
+	font-family: 'Noto Sans', 'Droid Sans', Arial, sans-serif;
+	line-height: 1.3;
+	margin: 0 2rem;
+	overflow: hidden;
+	padding: 1rem;
+	text-align: center;
+	z-index: 1;
+}
+		</style>
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+<link rel="manifest" href="index.manifest.json">
+<meta name='apple-mobile-web-app-capable' content='yes'>
+<meta name='mobile-web-app-capable' content='yes'>
+<meta name='apple-mobile-web-app-status-bar-style' content='black'>
+<meta name='apple-mobile-web-app-title' content='Galaxy Knight'>
+<meta name='theme-color' content='#000000'>
+<style>
+/* Seite fest auf den sichtbaren Bereich: kein Scrollen, kein Gummiband, kein Markieren, kein Lupen-/Kopiermenü */
+html, body {
+	position: fixed;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	overflow: hidden;
+	overscroll-behavior: none;
+	-webkit-text-size-adjust: 100%;
+}
+html, body, #canvas {
+	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+	-webkit-tap-highlight-color: transparent;
+}
+</style>
+<script>
+(function () {
+	var d = document, el = d.documentElement, nav = navigator;
+	// iPhone/iPad – auch iPad-Chrome und iPad-Safari, die sich als Mac ausgeben
+	var ios = /iPad|iPhone|iPod/.test(nav.userAgent) || (nav.platform === 'MacIntel' && nav.maxTouchPoints > 1);
+	var touch = ('ontouchstart' in window) || nav.maxTouchPoints > 0;
+	// Vom Home-Bildschirm gestartet: läuft schon ohne Browserleisten
+	var standalone = nav.standalone === true ||
+		!!(window.matchMedia && matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches);
+
+	// Zoomen per Doppeltipp/Spreizen abschalten (iOS hält sich nicht an user-scalable, darum zusätzlich unten)
+	var vp = d.querySelector('meta[name=viewport]');
+	if (vp) vp.content = 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no';
+
+	if (touch) {
+		var stop = function (e) { if (e.cancelable) e.preventDefault(); };
+		// Godot liest die Finger direkt am Canvas, das Verhindern hier betrifft nur das Browserverhalten
+		['gesturestart', 'gesturechange', 'gestureend', 'touchmove', 'dblclick'].forEach(function (t) {
+			d.addEventListener(t, stop, { passive: false });
+		});
+		d.addEventListener('contextmenu', stop);
+		d.addEventListener('selectstart', stop);
+	}
+
+	// Größe nachziehen: iOS meldet nach dem Drehen, beim Ein-/Ausblenden der Leisten oder nach dem Vollbild
+	// die endgültige Fenstergröße oft erst verspätet. Godot passt den Canvas bei jedem resize an.
+	var kick = function () {
+		[60, 300, 700].forEach(function (t) {
+			setTimeout(function () {
+				if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+				window.dispatchEvent(new Event('resize'));
+			}, t);
+		});
+	};
+	window.addEventListener('orientationchange', kick);
+	if (window.visualViewport) window.visualViewport.addEventListener('resize', kick);
+	d.addEventListener('fullscreenchange', kick);
+	d.addEventListener('webkitfullscreenchange', kick);
+	window.addEventListener('pageshow', kick);
+
+	// Vollbild (Fullscreen-API). Nicht auf iPhone/iPad: Dort gibt es sie entweder gar nicht (iPhone) oder WebKit
+	// beendet das Vollbild bei schnellem Tippen von selbst (Schutz vor falschen Tastaturen, iPad – auch in Chrome,
+	// das auf iOS WebKit nutzt). Stattdessen füllt das Spiel einfach den sichtbaren Bereich aus;
+	// echtes Vollbild auf iOS nur über den Home-Bildschirm.
+	function active() { return !!(d.fullscreenElement || d.webkitFullscreenElement); }
+	function supported() {
+		if (ios || standalone) return false;
+		var enabled = d.fullscreenEnabled;
+		if (enabled === undefined) enabled = d.webkitFullscreenEnabled;
+		return enabled !== false && !!(el.requestFullscreen || el.webkitRequestFullscreen);
+	}
+	function lock() {
+		try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(function () {}); } catch (e) {}
+	}
+	function enter() {
+		try {
+			var p = el.requestFullscreen ? el.requestFullscreen({ navigationUI: 'hide' }) : el.webkitRequestFullscreen();
+			if (p && p.then) p.then(lock).catch(function () {}); else lock();
+		} catch (e) {}
+	}
+	function exit() {
+		try { if (d.exitFullscreen) d.exitFullscreen(); else if (d.webkitExitFullscreen) d.webkitExitFullscreen(); } catch (e) {}
+	}
+	// window.gkFullscreen nutzt der Vollbild-Knopf im Spiel (autoload/touch_controls.gd)
+	window.gkFullscreen = {
+		ios: ios,
+		standalone: standalone,
+		supported: supported,
+		active: active,
+		toggle: function () { if (active()) exit(); else if (supported()) enter(); }
+	};
+	// Android & Co.: Browser erlauben Vollbild nur nach einer Berührung, darum schaltet der erste Fingertipp um.
+	// Nur ein echter Finger (pointerType touch/pen), kein Mausklick: Laptops mit Touchscreen melden auch touch,
+	// dort soll der erste Klick mit der Maus nicht ins Vollbild springen.
+	if (touch && supported()) {
+		var first = function (e) {
+			if (e.type === 'pointerup' && e.pointerType === 'mouse') return;
+			d.removeEventListener('touchend', first, true);
+			d.removeEventListener('pointerup', first, true);
+			if (!active()) enter();
+		};
+		d.addEventListener('touchend', first, true);
+		d.addEventListener('pointerup', first, true);
+	}
+
+	// Ton nach Bildschirmsperre oder App-Wechsel wieder einschalten (iOS): Safari unterbricht den AudioContext und
+	// meldet ihn danach teils als „running“, obwohl er stumm bleibt; Godot weckt ihn nicht. Darum merken wir uns jeden
+	// AudioContext, den Godot anlegt, halten ihn beim Verstecken selbst an (dann ist der Zustand eindeutig) und starten
+	// ihn bei der Rückkehr und bei jeder Berührung bzw. Taste neu. iOS erlaubt das nur aus einer Nutzeraktion heraus;
+	// ein stiller Ton über ein <audio>-Element weckt dabei auch die Audio-Sitzung von iOS wieder auf (#74).
+	// Ton wie ein Spiel behandeln (Safari ab iOS 17): Stummschalter gilt, Musik anderer Apps läuft weiter. Ohne diese
+	// Angabe schaltet der stille <audio>-Ton die Seite auf „Musikplayer“ und der Stummschalter wirkt nicht mehr.
+	try { if (navigator.audioSession) navigator.audioSession.type = 'ambient'; } catch (e) {}
+	var Ctx = window.AudioContext || window.webkitAudioContext;
+	if (Ctx) {
+		var contexts = [];
+		var Tracked = class extends Ctx {
+			constructor(options) {
+				super(options);
+				contexts.push(this);
+			}
+		};
+		window.AudioContext = Tracked;
+		if (window.webkitAudioContext) window.webkitAudioContext = Tracked;
+		// Stiller WAV-Ton (8 kHz, mono, 0,1 s) für das <audio>-Element
+		var silence = (function () {
+			var n = 800, b = new Uint8Array(44 + n), v = new DataView(b.buffer);
+			var str = function (o, s) { for (var i = 0; i < s.length; i++) b[o + i] = s.charCodeAt(i); };
+			str(0, 'RIFF'); v.setUint32(4, 36 + n, true); str(8, 'WAVEfmt '); v.setUint32(16, 16, true);
+			v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 8000, true);
+			v.setUint16(32, 1, true); v.setUint16(34, 8, true); str(36, 'data'); v.setUint32(40, n, true);
+			b.fill(128, 44);
+			var s = '';
+			for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+			return 'data:audio/wav;base64,' + btoa(s);
+		})();
+		var tag = null;
+		var returned = true;
+		var wake = function (gesture) {
+			if (gesture === true && returned) {
+				returned = false;
+				try {
+					if (!tag) { tag = new Audio(silence); tag.setAttribute('playsinline', ''); }
+					var p = tag.play();
+					if (p && p.catch) p.catch(function () {});
+				} catch (e) {}
+			}
+			contexts.forEach(function (c) {
+				if (c.state === 'running' || c.state === 'closed') return;
+				try {
+					c.resume().catch(function () {});
+					var s = c.createBufferSource();
+					s.buffer = c.createBuffer(1, 1, c.sampleRate);
+					s.connect(c.destination);
+					s.start(0);
+				} catch (e) {}
+			});
+		};
+		var sleep = function () {
+			returned = true;
+			contexts.forEach(function (c) {
+				if (c.state === 'running') c.suspend().catch(function () {});
+			});
+		};
+		['touchend', 'pointerup', 'keydown'].forEach(function (t) {
+			d.addEventListener(t, function () { wake(true); }, true);
+		});
+		d.addEventListener('visibilitychange', function () { if (d.hidden) sleep(); else wake(false); });
+		window.addEventListener('pagehide', sleep);
+		window.addEventListener('pageshow', function () { wake(false); });
+		window.addEventListener('focus', function () { wake(false); });
+	}
+})();
+</script>
+<script>
+// Diagnose beim Laden (#76): Mit ?diag an der Adresse zeigt die Seite oben links, wie weit der Start kommt
+// (Downloads, Wasm übersetzen, Engine-Ausgaben, erstes Bild, Fehler). Das Protokoll liegt zusätzlich in
+// localStorage, damit nach einem Absturz des Tabs der letzte Stand des vorherigen Laufs sichtbar bleibt.
+(function () {
+	var on = false;
+	try { on = new URLSearchParams(location.search).has('diag'); } catch (e) {}
+	if (!on) return;
+	var KEY = 'gk_diag', t0 = Date.now(), lines = [], prev = '', box = null, head = null, list = null;
+	var frames = 0, mem = null, ticks = 0, last = Date.now(), started = 0, seen = {};
+	try { prev = localStorage.getItem(KEY) || ''; } catch (e) {}
+	function sec() { return ((Date.now() - t0) / 1000).toFixed(1); }
+	function save() {
+		try { localStorage.setItem(KEY, lines.slice(-60).join('|')); } catch (e) {}
+	}
+	function log(msg) {
+		msg = String(msg).slice(0, 160);
+		// Gleiche Meldungen höchstens zweimal, sonst verdrängt Dauerrauschen die wichtigen Zeilen
+		seen[msg] = (seen[msg] || 0) + 1;
+		if (seen[msg] > 2) return;
+		var line = sec() + 's ' + msg;
+		lines.push(line);
+		if (lines.length > 200) lines.shift();
+		save();
+		if (list) {
+			var div = document.createElement('div');
+			div.textContent = line;
+			list.appendChild(div);
+			while (list.childNodes.length > 40) list.removeChild(list.firstChild);
+		}
+	}
+	function mb(n) { return (n / 1048576).toFixed(0) + ' MB'; }
+
+	// Ausgaben der Engine und Fehler mitschreiben
+	['log', 'warn', 'error'].forEach(function (k) {
+		var orig = console[k];
+		console[k] = function () {
+			try { log((k === 'log' ? '' : k + ': ') + Array.prototype.join.call(arguments, ' ')); } catch (e) {}
+			return orig.apply(console, arguments);
+		};
+	});
+	window.addEventListener('error', function (e) { log('FEHLER: ' + e.message + ' @' + (e.filename || '').split('/').pop() + ':' + e.lineno); });
+	window.addEventListener('unhandledrejection', function (e) { log('FEHLER (Promise): ' + (e.reason && e.reason.message || e.reason)); });
+
+	// Downloads: Antwort da (mit Größe) und Ende des Lesens
+	var ofetch = window.fetch;
+	if (ofetch) window.fetch = function (input) {
+		var name = String(input && input.url || input).split('/').pop();
+		log('lade ' + name);
+		return ofetch.apply(this, arguments).then(function (r) {
+			var len = r.headers.get('content-length');
+			log('Antwort ' + name + ' ' + r.status + (len ? ' ' + mb(+len) : ''));
+			return r;
+		}, function (err) { log('FEHLER Download ' + name + ': ' + err); throw err; });
+	};
+
+	// Wasm übersetzen und starten; danach den Wasm-Speicher beobachten
+	var W = window.WebAssembly;
+	function found(res) {
+		try {
+			var ex = (res.instance || res).exports;
+			for (var k in ex) if (ex[k] instanceof W.Memory) mem = ex[k];
+		} catch (e) {}
+		return res;
+	}
+	if (W) ['instantiateStreaming', 'instantiate', 'compile', 'compileStreaming'].forEach(function (k) {
+		var orig = W[k];
+		if (!orig) return;
+		W[k] = function () {
+			var t = Date.now();
+			log('Wasm ' + k + ' ...');
+			return orig.apply(W, arguments).then(function (res) {
+				log('Wasm ' + k + ' fertig nach ' + ((Date.now() - t) / 1000).toFixed(1) + ' s');
+				return found(res);
+			}, function (err) { log('FEHLER Wasm ' + k + ': ' + err); throw err; });
+		};
+	});
+
+	// Erstes Bild und Bildzähler
+	var raf = window.requestAnimationFrame;
+	window.requestAnimationFrame = function (cb) {
+		return raf.call(window, function (t) {
+			frames++;
+			if (frames === 1) log('erstes requestAnimationFrame');
+			cb(t);
+		});
+	};
+
+	// Seite versteckt / wieder da (Wechsel, Sperre)
+	document.addEventListener('visibilitychange', function () { log(document.hidden ? 'Seite versteckt' : 'Seite sichtbar'); });
+	window.addEventListener('pagehide', function () { log('pagehide'); });
+
+	// Jede Sekunde Kopfzeile auffrischen; Hänger des Haupt-Threads (Takt bleibt aus) protokollieren
+	setInterval(function () {
+		var now = Date.now();
+		if (now - last > 2500) log('Hänger ' + ((now - last) / 1000).toFixed(1) + ' s');
+		last = now;
+		ticks++;
+		if (!started && document.getElementById('status') === null && document.getElementById('canvas')) {
+			started = now;
+			log('Ladebildschirm weg, Spiel läuft');
+		}
+		var txt = 'Bilder=' + frames + (mem ? '  Wasm-Speicher=' + mb(mem.buffer.byteLength) : '');
+		if (head) head.textContent = 't=' + sec() + 's  ' + txt;
+		// In den ersten 30 s nach dem Start jede Sekunde, damit ein Absturz kurz danach eingegrenzt werden kann
+		if (ticks % 10 === 0 || (started && now - started < 30000)) log(txt);
+	}, 1000);
+
+	function gl() {
+		try {
+			var c = document.createElement('canvas'), g = c.getContext('webgl2');
+			if (!g) return 'WebGL2 FEHLT';
+			var r = 'WebGL2 ok, MAX_TEXTURE_SIZE ' + g.getParameter(g.MAX_TEXTURE_SIZE);
+			var lose = g.getExtension('WEBGL_lose_context');
+			if (lose) lose.loseContext();
+			return r;
+		} catch (e) { return 'WebGL2 Fehler ' + e; }
+	}
+	function show() {
+		box = document.createElement('div');
+		box.style.cssText = 'position:fixed;left:0;top:0;max-width:70%;max-height:60%;overflow:hidden;z-index:99999;' +
+			'pointer-events:none;background:rgba(0,0,0,0.75);color:#7f7;font:11px/1.25 monospace;padding:4px 6px;white-space:pre-wrap';
+		head = document.createElement('div');
+		head.style.color = '#ff7';
+		box.appendChild(head);
+		if (prev) {
+			var p = document.createElement('div');
+			p.style.color = '#f99';
+			p.textContent = 'Vorheriger Lauf, letzte Zeilen:|' + prev.split('|').slice(-8).join('|');
+			p.textContent = p.textContent.split('|').join(String.fromCharCode(10));
+			box.appendChild(p);
+		}
+		list = document.createElement('div');
+		box.appendChild(list);
+		lines.slice(-40).forEach(function (l) {
+			var div = document.createElement('div');
+			div.textContent = l;
+			list.appendChild(div);
+		});
+		document.body.appendChild(box);
+	}
+	log('Diagnose an: ' + navigator.userAgent);
+	log('Bildschirm ' + screen.width + 'x' + screen.height + ' @' + (window.devicePixelRatio || 1) + 'x, ' + gl());
+	if (document.body) show(); else document.addEventListener('DOMContentLoaded', show);
+})();
+</script>
+
+	</head>
+	<body>
+		<canvas id="canvas">
+			Your browser does not support the canvas tag.
+		</canvas>
+
+		<noscript>
+			Your browser does not support JavaScript.
+		</noscript>
+
+		<div id="status">
+			<img id="status-splash" class="show-image--true fullsize--true use-filter--true" src="index.png" alt="">
+			<progress id="status-progress"></progress>
+			<div id="status-notice"></div>
+		</div>
+
+		<script src="index.js"></script>
+		<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":false,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":76727244,"index.wasm":39514754},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4,"serviceWorker":"index.service.worker.js"};
+const GODOT_THREADS_ENABLED = false;
+const engine = new Engine(GODOT_CONFIG);
+
+(function () {
+	const statusOverlay = document.getElementById('status');
+	const statusProgress = document.getElementById('status-progress');
+	const statusNotice = document.getElementById('status-notice');
+
+	let initializing = true;
+	let statusMode = '';
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			statusOverlay.remove();
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		statusProgress.style.display = mode === 'progress' ? 'block' : 'none';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function setStatusNotice(text) {
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		const lines = text.split('\n');
+		lines.forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		if (err instanceof Error) {
+			setStatusNotice(err.message);
+		} else if (typeof err === 'string') {
+			setStatusNotice(err);
+		} else {
+			setStatusNotice('An unknown error occurred.');
+		}
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	const missing = Engine.getMissingFeatures({
+		threads: GODOT_THREADS_ENABLED,
+	});
+
+	if (missing.length !== 0) {
+		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
+			let serviceWorkerRegistrationPromise;
+			try {
+				serviceWorkerRegistrationPromise = navigator.serviceWorker.getRegistration();
+			} catch (err) {
+				serviceWorkerRegistrationPromise = Promise.reject(new Error('Service worker registration failed.'));
+			}
+			// There's a chance that installing the service worker would fix the issue
+			Promise.race([
+				serviceWorkerRegistrationPromise.then((registration) => {
+					if (registration != null) {
+						return Promise.reject(new Error('Service worker already exists.'));
+					}
+					return registration;
+				}).then(() => engine.installServiceWorker()),
+				// For some reason, `getRegistration()` can stall
+				new Promise((resolve) => {
+					setTimeout(() => resolve(), 2000);
+				}),
+			]).then(() => {
+				// Reload if there was no error.
+				window.location.reload();
+			}).catch((err) => {
+				console.error('Error while registering service worker:', err);
+			});
+		} else {
+			// Display the message as usual
+			const missingMsg = 'Error\nThe following features required to run Godot projects on the Web are missing:\n';
+			displayFailureNotice(missingMsg + missing.join('\n'));
+		}
+	} else {
+		setStatusMode('progress');
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (current > 0 && total > 0) {
+					statusProgress.value = current;
+					statusProgress.max = total;
+				} else {
+					statusProgress.removeAttribute('value');
+					statusProgress.removeAttribute('max');
+				}
+			},
+		}).then(() => {
+			setStatusMode('hidden');
+		}, displayFailureNotice);
+	}
+}());
+		</script>
+	</body>
+</html>
+
